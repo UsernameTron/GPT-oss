@@ -1,0 +1,18 @@
+{
+  "tokenizer": {
+    "loaded": true,
+    "load_time": 0.91,
+    "vocab_size": 200019,
+    "test_tokens": 12,
+    "decode_match": true
+  },
+  "model_config": {
+    "loaded": true,
+    "load_time": 0.16,
+    "num_parameters": "unknown",
+    "hidden_size": 2880,
+    "num_attention_heads": 64,
+    "num_hidden_layers": 24,
+    "vocab_size": 201088
+  }
+}
