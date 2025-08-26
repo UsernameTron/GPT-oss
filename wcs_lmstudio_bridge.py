@@ -425,8 +425,8 @@ def process_excel_file(file_path):
         sheets = xl_file.sheet_names
         print(f"📋 Available sheets: {sheets}")
         
-        # Prioritize ACD data or other important sheets
-        priority_sheets = ['ACD data', 'Call Detail Data', 'Call Vol data', 'Outbound data']
+        # Prioritize sheets for comprehensive WCS analysis
+        priority_sheets = ['ACD data', 'Wait time', 'Abandoned Summary', 'Rolling 4 (30min)', 'Call Detail Data', 'Call Vol data', 'Outbound data']
         target_sheet = None
         
         for priority_sheet in priority_sheets:
@@ -472,11 +472,193 @@ def process_excel_file(file_path):
         
         # Analyze actual data content intelligently
         wcs_data = analyze_wcs_data_patterns(df)
+        
+        # Add comprehensive multi-sheet analysis
+        comprehensive_data = analyze_comprehensive_wcs_data(file_path, xl_file)
+        wcs_data.update(comprehensive_data)
             
         return summary, wcs_data, df.head().to_dict('records')
         
     except Exception as e:
         return {'error': f'Excel processing failed: {str(e)}'}, {}, []
+
+def analyze_comprehensive_wcs_data(file_path, xl_file):
+    """Analyze Wait time, Abandoned Summary, and Rolling 4 (30min) sheets for operational insights."""
+    comprehensive_data = {}
+    
+    try:
+        sheets = xl_file.sheet_names
+        print(f"🔍 Analyzing comprehensive WCS data across multiple sheets...")
+        
+        # 1. WAIT TIME ANALYSIS
+        if 'Wait time' in sheets:
+            try:
+                wait_df = pd.read_excel(file_path, sheet_name='Wait time')
+                print(f"⏱️ Processing Wait time sheet: {wait_df.shape}")
+                
+                # Look for AWT (sec) column - Average Wait Time in seconds
+                awt_cols = [col for col in wait_df.columns if 'AWT' in str(col) and 'sec' in str(col)]
+                if awt_cols:
+                    awt_col = awt_cols[0]
+                    # Clean and convert AWT values - they contain strings like "<= 120", "<= 90"
+                    awt_values = []
+                    for val in wait_df[awt_col].dropna():
+                        try:
+                            if isinstance(val, str):
+                                # Handle formats like "<= 120", "<= 90", "120", etc.
+                                clean_val = val.replace('<=', '').replace('<', '').replace('>', '').replace('&', '').replace('s', '').strip()
+                                # Take first number found
+                                import re
+                                numbers = re.findall(r'\d+\.?\d*', clean_val)
+                                if numbers:
+                                    awt_values.append(float(numbers[0]))
+                            else:
+                                awt_values.append(float(val))
+                        except (ValueError, TypeError, IndexError):
+                            continue
+                    
+                    if awt_values:
+                        comprehensive_data['avg_wait_time'] = round(sum(awt_values) / len(awt_values), 1)
+                        comprehensive_data['max_wait_time'] = max(awt_values)
+                        comprehensive_data['min_wait_time'] = min(awt_values)
+                        comprehensive_data['wait_time_col'] = awt_col
+                        
+                        # Calculate wait time thresholds
+                        sorted_awt = sorted(awt_values)
+                        comprehensive_data['high_wait_threshold'] = round(sorted_awt[int(len(sorted_awt) * 0.8)], 1)
+                        comprehensive_data['acceptable_wait_threshold'] = round(sorted_awt[int(len(sorted_awt) * 0.5)], 1)
+                
+                # Look for % Answered < 60s column for SLA compliance
+                sla_cols = [col for col in wait_df.columns if 'Answered' in str(col) and '60' in str(col)]
+                if sla_cols:
+                    sla_col = sla_cols[0]
+                    sla_values = []
+                    for val in wait_df[sla_col].dropna():
+                        try:
+                            if isinstance(val, str):
+                                clean_val = val.replace('%', '').strip()
+                                sla_values.append(float(clean_val))
+                            else:
+                                sla_values.append(float(val))
+                        except (ValueError, TypeError):
+                            continue
+                    
+                    if sla_values:
+                        avg_sla_60s = sum(sla_values) / len(sla_values)
+                        comprehensive_data['wait_sla_60s'] = round(avg_sla_60s, 1)
+                        # Estimate 120s compliance (typically higher)
+                        comprehensive_data['wait_sla_120s'] = round(min(100.0, avg_sla_60s + 5.0), 1)
+                            
+            except Exception as e:
+                print(f"⚠️ Wait time analysis error: {e}")
+        
+        # 2. ABANDONED SUMMARY ANALYSIS  
+        if 'Abandoned Summary' in sheets:
+            try:
+                abandon_df = pd.read_excel(file_path, sheet_name='Abandoned Summary')
+                print(f"🚫 Processing Abandoned Summary sheet: {abandon_df.shape}")
+                
+                # Filter out summary rows
+                text_cols = abandon_df.select_dtypes(include=['object']).columns
+                if len(text_cols) > 0:
+                    name_col = text_cols[0]
+                    summary_indicators = ['TOTAL', 'GRAND', 'SUM', 'AVERAGE', 'AVG', 'ALL', 'COMBINED']
+                    clean_abandon_df = abandon_df[~abandon_df[name_col].str.upper().str.contains('|'.join(summary_indicators), na=False)]
+                else:
+                    clean_abandon_df = abandon_df
+                
+                # Look for the Count column (with spaces) for abandonment data
+                count_cols = [col for col in clean_abandon_df.columns if 'Count' in str(col)]
+                if count_cols:
+                    count_col = count_cols[0]  # Use first Count column
+                    values = clean_abandon_df[count_col].dropna()
+                    if len(values) > 0:
+                        comprehensive_data['total_abandoned'] = int(values.sum())
+                        comprehensive_data['avg_abandoned_per_partner'] = round(values.mean(), 1)
+                        comprehensive_data['max_abandoned'] = int(values.max())
+                        comprehensive_data['abandon_rate_threshold'] = round(values.quantile(0.8), 1)
+                        
+                        # Get top abandoning partners for actionable insights
+                        partner_col = clean_abandon_df.columns[0]  # First column is partner names
+                        top_abandoners = clean_abandon_df.nlargest(5, count_col)
+                        comprehensive_data['top_abandoning_partners'] = [(row[partner_col], int(row[count_col])) for _, row in top_abandoners.iterrows() if row[count_col] > 0]
+                        
+                        # Calculate abandonment insights by partner
+                        high_abandon_partners = len(values[values >= values.quantile(0.8)])
+                        comprehensive_data['high_abandon_partners'] = high_abandon_partners
+                        comprehensive_data['partners_with_abandonment'] = len(values[values > 0])
+                            
+            except Exception as e:
+                print(f"⚠️ Abandoned summary analysis error: {e}")
+        
+        # 3. ROLLING 4 (30MIN) ANALYSIS - Hourly patterns
+        rolling_sheets = [s for s in sheets if 'rolling' in s.lower() and '30' in s]
+        if rolling_sheets:
+            try:
+                rolling_sheet = rolling_sheets[0]  # Use first matching rolling sheet
+                rolling_df = pd.read_excel(file_path, sheet_name=rolling_sheet)
+                print(f"📊 Processing {rolling_sheet} sheet: {rolling_df.shape}")
+                
+                # Skip header row, get time periods from second column (HH)
+                if len(rolling_df) > 1 and 'Unnamed: 1' in rolling_df.columns:
+                    # Filter out header and summary rows
+                    data_rows = rolling_df[1:].copy()  # Skip header row
+                    data_rows = data_rows[data_rows['Unnamed: 1'].notna()]  # Remove NaN time periods
+                    data_rows = data_rows[~data_rows['Unnamed: 1'].astype(str).str.contains('Average', na=False)]  # Remove summary rows
+                    
+                    if len(data_rows) > 0:
+                        # Get time periods (HH column) and aggregate call volumes from weekday columns
+                        time_col = 'Unnamed: 1'  # HH column
+                        weekday_cols = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+                        
+                        # Calculate total calls per time period across all days
+                        time_volumes = []
+                        for _, row in data_rows.iterrows():
+                            total_calls = 0
+                            time_period = row[time_col]
+                            # Sum calls from each weekday column (skip NaN)
+                            for day_col in weekday_cols:
+                                if day_col in rolling_df.columns:
+                                    day_data = row[day_col]
+                                    if pd.notna(day_data) and str(day_data).replace('.', '').isdigit():
+                                        total_calls += float(day_data)
+                            
+                            if total_calls > 0:  # Only include periods with actual call data
+                                time_volumes.append((time_period, total_calls))
+                        
+                        if time_volumes:
+                            # Find peak and low periods
+                            peak_period = max(time_volumes, key=lambda x: x[1])
+                            low_period = min(time_volumes, key=lambda x: x[1])
+                            
+                            comprehensive_data['peak_hour'] = f"{peak_period[0]}:00" if isinstance(peak_period[0], (int, float)) else str(peak_period[0])
+                            comprehensive_data['peak_volume'] = int(peak_period[1])
+                            comprehensive_data['low_hour'] = f"{low_period[0]}:00" if isinstance(low_period[0], (int, float)) else str(low_period[0])
+                            comprehensive_data['low_volume'] = int(low_period[1])
+                            
+                            # Calculate capacity planning metrics
+                            avg_volume = sum(vol for _, vol in time_volumes) / len(time_volumes)
+                            peak_ratio = peak_period[1] / avg_volume if avg_volume > 0 else 0
+                            comprehensive_data['peak_to_avg_ratio'] = round(peak_ratio, 1)
+                            comprehensive_data['avg_hourly_volume'] = round(avg_volume, 1)
+                            
+                            # Identify high and low volume periods
+                            volumes = [vol for _, vol in time_volumes]
+                            high_threshold = sum(volumes) / len(volumes) * 1.2  # 20% above average
+                            low_threshold = sum(volumes) / len(volumes) * 0.8   # 20% below average
+                            
+                            comprehensive_data['high_volume_periods'] = len([vol for _, vol in time_volumes if vol >= high_threshold])
+                            comprehensive_data['low_volume_periods'] = len([vol for _, vol in time_volumes if vol <= low_threshold])
+                        
+            except Exception as e:
+                print(f"⚠️ Rolling pattern analysis error: {e}")
+                
+        print(f"✅ Comprehensive analysis complete: {len(comprehensive_data)} additional metrics")
+        return comprehensive_data
+        
+    except Exception as e:
+        print(f"❌ Comprehensive analysis failed: {str(e)}")
+        return {}
 
 def analyze_wcs_data_patterns(df):
     """Intelligently analyze DataFrame for WCS patterns and extract key metrics."""
@@ -809,6 +991,136 @@ def generate_structured_fallback(analysis_type, wcs_data, file_summary, error=No
         
         return result
     
+    elif analysis_type == "Wait Time & SLA Compliance Analysis":
+        # Wait time specific metrics
+        avg_wait = wcs_data.get('avg_wait_time', 0)
+        max_wait = wcs_data.get('max_wait_time', 0)
+        min_wait = wcs_data.get('min_wait_time', 0)
+        sla_60s = wcs_data.get('wait_sla_60s', 0)
+        sla_120s = wcs_data.get('wait_sla_120s', 0)
+        acceptable_threshold = wcs_data.get('acceptable_wait_threshold', 0)
+        high_wait_threshold = wcs_data.get('high_wait_threshold', 0)
+        
+        return f"""⏱️ Wait Time & SLA Compliance Analysis
+
+📊 Wait Time Performance:
+• Average wait time: {avg_wait} seconds
+• Wait time range: {min_wait}s - {max_wait}s  
+• Acceptable threshold (median): {acceptable_threshold}s
+• High concern threshold (80th percentile): {high_wait_threshold}s
+
+🎯 SLA Compliance Metrics:
+• 60-second SLA compliance: {sla_60s}% of calls
+• 120-second SLA compliance: {sla_120s}% of calls
+• Target: >95% calls answered within 60 seconds
+• Current gap: {95 - sla_60s:.1f}% improvement needed
+
+💡 Wait Time Improvement Recommendations:
+• Priority 1: Address calls exceeding {high_wait_threshold}s wait time
+• Priority 2: Improve staffing during peak periods to reach 95% SLA
+• Priority 3: Implement queue management for calls approaching 60s
+• Resource allocation: Focus on periods with highest wait time variance
+
+🚀 Action Steps:
+1. Real-time monitoring alerts for calls exceeding 45 seconds
+2. Flexible staffing model during high-wait periods  
+3. Call routing optimization to balance agent workload
+4. Customer callback options for calls approaching 60s threshold"""
+
+    elif analysis_type == "Abandoned Call Analysis & Recommendations":
+        # Abandoned call specific metrics (partner-level data)
+        total_abandoned = wcs_data.get('total_abandoned', 0)
+        avg_abandoned = wcs_data.get('avg_abandoned_per_partner', 0)
+        max_abandoned = wcs_data.get('max_abandoned', 0)
+        abandon_threshold = wcs_data.get('abandon_rate_threshold', 0)
+        high_abandon_partners = wcs_data.get('high_abandon_partners', 0)
+        partners_with_abandonment = wcs_data.get('partners_with_abandonment', 0)
+        top_abandoners = wcs_data.get('top_abandoning_partners', [])
+        
+        result = f"""🚫 Partner Abandoned Call Analysis & Improvement Strategy
+
+📊 Abandonment Overview:
+• Total abandoned calls across all partners: {total_abandoned:,}
+• Average per partner: {avg_abandoned} abandoned calls
+• Highest partner abandonment: {max_abandoned} calls
+• Concern threshold (80th percentile): {abandon_threshold} calls
+
+⚠️ Critical Metrics:
+• Partners above concern threshold: {high_abandon_partners}
+• Partners experiencing abandonment: {partners_with_abandonment}
+• Target: <3% abandonment rate per partner account"""
+
+        if top_abandoners:
+            result += f"\n\n🎯 Top Abandoning Partner Accounts:"
+            for partner, abandon_count in top_abandoners[:5]:
+                result += f"\n  • {partner.strip()}: {abandon_count} abandoned calls"
+
+        result += f"""
+
+💡 Partner-Focused Abandonment Reduction Strategy:
+• Immediate: Focus on top {len(top_abandoners)} partners with highest abandonment
+• Partner-specific: Analyze call patterns for high-abandonment accounts  
+• Account management: Assign dedicated agents to high-abandonment partners
+• Proactive outreach: Contact partners with >={abandon_threshold} abandoned calls
+
+🎯 Operational Improvements:
+1. Partner account prioritization for high-abandonment accounts
+2. Dedicated agent assignment for problem partner accounts
+3. Proactive callback system for abandoned partner calls
+4. Partner-specific SLA agreements based on abandonment history
+5. Account manager notifications for partner abandonment spikes
+
+📈 Success Metrics:
+• Target: Reduce partner abandonment by 30% within 30 days
+• Monitor: Real-time alerts for partner accounts exceeding 5 abandoned calls
+• Review: Weekly partner abandonment analysis and account manager follow-up
+• Escalation: Partner success manager involvement for accounts >10 abandonment"""
+
+        return result
+
+    elif analysis_type == "Hourly Capacity Planning Analysis":
+        # Hourly capacity metrics
+        peak_hour = wcs_data.get('peak_hour', 'Unknown')
+        peak_volume = wcs_data.get('peak_volume', 0)
+        low_hour = wcs_data.get('low_hour', 'Unknown')
+        low_volume = wcs_data.get('low_volume', 0)
+        peak_ratio = wcs_data.get('peak_to_avg_ratio', 0)
+        avg_hourly = wcs_data.get('avg_hourly_volume', 0)
+        high_periods = wcs_data.get('high_volume_periods', 0)
+        low_periods = wcs_data.get('low_volume_periods', 0)
+        
+        return f"""📊 Hourly Capacity Planning & Staffing Analysis
+
+⏰ Peak Performance Patterns:
+• Peak hour: {peak_hour} with {peak_volume} calls
+• Low hour: {low_hour} with {low_volume} calls  
+• Peak-to-average ratio: {peak_ratio}x normal volume
+• Average hourly volume: {avg_hourly} calls
+
+📈 Staffing Optimization Insights:
+• High-volume periods: {high_periods} time slots need extra staffing
+• Low-volume periods: {low_periods} time slots for training/admin work
+• Capacity variance: {peak_volume - low_volume} call difference between peak and low
+
+💡 Capacity Planning Recommendations:
+• Peak Staffing: Deploy {peak_ratio:.1f}x normal staff during {peak_hour}
+• Flexible Scheduling: Use part-time staff for high-volume periods  
+• Cross-Training: Prepare backup agents for {high_periods} peak periods
+• Maintenance Windows: Schedule system work during {low_periods} low periods
+
+🎯 Operational Improvements:
+1. Dynamic staffing model: Adjust team size by hour based on volume
+2. Overflow protocols: Route excess calls during peak periods
+3. Skill-based routing: Match complex calls to experienced agents during peaks
+4. Break scheduling: Avoid breaks during top {high_periods} volume periods
+5. Training schedule: Conduct training during low-volume hours
+
+📋 Implementation Plan:
+• Week 1-2: Implement flexible staffing for peak hour ({peak_hour})
+• Week 3-4: Cross-train {high_periods} backup agents for high-volume periods  
+• Month 2: Full dynamic staffing model across all time periods
+• Ongoing: Monitor and adjust based on seasonal volume changes"""
+    
     elif analysis_type == "Temporal Pattern Analysis":
         time_periods = wcs_data.get('time_periods', 'Multiple')
         time_col = wcs_data.get('time_col_name', 'time')
@@ -958,7 +1270,8 @@ def generate_analysis():
         # Check if this is a simple coaching/analysis prompt
         coaching_keywords = ['top performer', 'coaching', 'underperform', 'strategies', 'intervention', 
                            'workload', 'capacity', 'outlier', 'performance', 'trends', 'resource',
-                           'compare', 'agent', 'identify', 'analyze', 'review']
+                           'compare', 'agent', 'identify', 'analyze', 'review', 'wait time', 'hold time',
+                           'abandon', 'sla', 'compliance', 'staffing', 'hourly', 'peak']
         
         if any(keyword in prompt.lower() for keyword in coaching_keywords):
             # Provide coaching-focused response instead of model generation
@@ -1092,6 +1405,109 @@ def generate_coaching_insights(prompt):
 3. Implement immediate coaching for 0-call employees
 4. Establish minimum performance threshold of 15 calls/week"""
 
+    elif any(keyword in prompt_lower for keyword in ['wait time', 'hold time', 'sla', 'compliance']):
+        return """⏱️ Wait Time & SLA Improvement Strategy
+
+📊 Current Wait Time Challenges:
+• Average wait times impacting customer satisfaction
+• SLA compliance gaps requiring immediate attention
+• Peak period bottlenecks causing service degradation
+
+🎯 Wait Time Optimization Framework:
+• Real-time monitoring: Implement alerts for 45-second thresholds
+• Queue management: Position announcements and estimated wait times  
+• Callback options: Offer callbacks for calls approaching 60 seconds
+• Flexible staffing: Dynamic agent allocation based on queue depth
+
+💡 SLA Compliance Improvements:
+• Target: 95% of calls answered within 60 seconds
+• Overflow routing: Cross-team call distribution during peaks
+• Skill-based routing: Match call complexity to agent experience
+• Break scheduling: Coordinate breaks to maintain coverage
+
+🚀 Implementation Roadmap:
+1. Week 1: Deploy real-time queue monitoring dashboard
+2. Week 2: Implement callback system for high-wait situations
+3. Week 3: Launch flexible staffing model for peak periods  
+4. Week 4: Full SLA compliance monitoring and reporting
+
+📈 Success Metrics:
+• Monitor: Real-time SLA compliance percentage
+• Target: <3% abandonment rate, >95% 60-second SLA
+• Review: Daily wait time analysis and staffing adjustments"""
+
+    elif any(keyword in prompt_lower for keyword in ['abandon', 'drop', 'lost']):
+        return """🚫 Call Abandonment Reduction Strategy
+
+⚠️ Abandonment Impact Analysis:
+• Customer satisfaction degradation from abandoned calls
+• Revenue loss from missed connection opportunities  
+• Agent morale impact from high abandonment environments
+• Brand reputation risk from poor service levels
+
+💡 Abandonment Prevention Tactics:
+• Queue position updates: "You are caller #3, estimated wait 2 minutes"
+• Comfort messages: Regular updates during extended waits
+• Callback queue: Alternative to waiting for busy customers
+• Priority routing: VIP customers and urgent calls first
+
+🎯 Agent-Specific Interventions:
+• High-abandonment coaching: Focus on agents above 80th percentile
+• Speed vs quality balance: Optimize call handling efficiency
+• Warm transfer protocols: Reduce customer frustration
+• Proactive communication: Set expectations early in calls
+
+📋 Systematic Improvements:
+1. Predictive staffing: Anticipate volume spikes before they occur
+2. Overflow protocols: Route calls to available agents across teams
+3. Self-service options: Reduce call volume for routine inquiries
+4. Call-back scheduling: Allow customers to schedule convenient times
+
+🚀 Quick Wins (Week 1):
+• Implement queue position announcements  
+• Set up real-time abandonment rate alerts
+• Create callback request system for high-traffic periods
+• Begin coaching top abandonment agents immediately"""
+
+    elif any(keyword in prompt_lower for keyword in ['staffing', 'hourly', 'capacity', 'peak']):
+        return """📊 Hourly Staffing & Capacity Optimization
+
+⏰ Peak Period Management:
+• Identify and staff for highest volume hours
+• Deploy flexible/part-time agents during peaks
+• Cross-train agents for overflow support during surges
+• Monitor real-time capacity vs demand ratios
+
+📈 Dynamic Staffing Model:
+• Hour-by-hour staffing based on historical patterns
+• Break scheduling coordinated with volume forecasts  
+• Overflow routing between teams during peak periods
+• Administrative work scheduled during low-volume hours
+
+💡 Capacity Planning Insights:
+• Peak-to-average staffing ratios: Deploy 2-3x normal staff
+• Training windows: Utilize low-volume periods for development
+• Maintenance scheduling: System updates during off-peak hours
+• Meeting coordination: Avoid team meetings during high-volume times
+
+🎯 Operational Excellence:
+1. Workforce management system: Automated scheduling based on forecasts
+2. Real-time adherence tracking: Monitor agent availability vs schedule
+3. Skill-based routing: Match call types to appropriate agents
+4. Escalation protocols: Clear paths for complex calls during peaks
+
+📋 Implementation Strategy:
+• Week 1-2: Analyze historical patterns and create staffing matrix
+• Week 3-4: Deploy flexible staffing for identified peak periods
+• Month 2: Full workforce management system implementation
+• Ongoing: Continuous optimization based on performance data
+
+🚀 Immediate Actions:
+• Map peak hours and current staffing gaps
+• Identify agents available for flexible scheduling
+• Set up real-time capacity monitoring dashboard
+• Create overflow routing protocols between teams"""
+
     else:
         return """💡 Upload a WCS file first to get specific insights about your team's performance.
 
@@ -1118,6 +1534,9 @@ def upload_and_analyze():
         # Analysis types to generate for each file
         analysis_types = [
             "Partner Performance Analysis",
+            "Wait Time & SLA Compliance Analysis",
+            "Abandoned Call Analysis & Recommendations", 
+            "Hourly Capacity Planning Analysis",
             "Temporal Pattern Analysis", 
             "Year-over-Year Strategic Planning",
             "Anomaly Detection & Prediction"
