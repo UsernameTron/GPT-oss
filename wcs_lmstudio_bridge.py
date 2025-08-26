@@ -420,8 +420,48 @@ def allowed_file(filename):
 def process_excel_file(file_path):
     """Process Excel file and extract WCS data."""
     try:
-        # Try reading Excel file
-        df = pd.read_excel(file_path)
+        # Check for WCS-specific sheets first
+        xl_file = pd.ExcelFile(file_path)
+        sheets = xl_file.sheet_names
+        print(f"📋 Available sheets: {sheets}")
+        
+        # Prioritize ACD data or other important sheets
+        priority_sheets = ['ACD data', 'Call Detail Data', 'Call Vol data', 'Outbound data']
+        target_sheet = None
+        
+        for priority_sheet in priority_sheets:
+            if priority_sheet in sheets:
+                target_sheet = priority_sheet
+                break
+        
+        # Read the prioritized sheet or default to first
+        if target_sheet:
+            print(f"📊 Reading priority sheet: {target_sheet}")
+            df = pd.read_excel(file_path, sheet_name=target_sheet)
+        else:
+            print(f"📊 Reading default sheet: {sheets[0]}")
+            df = pd.read_excel(file_path)
+        
+        # Filter out summary rows and employees with 0 calls
+        numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+        if len(numeric_cols) > 0:
+            original_count = len(df)
+            
+            # Filter out summary/total rows first
+            text_cols = df.select_dtypes(include=['object']).columns
+            if len(text_cols) > 0:
+                name_col = text_cols[0]
+                # Remove rows with summary indicators
+                summary_indicators = ['TOTAL', 'GRAND', 'SUM', 'AVERAGE', 'AVG', 'ALL', 'COMBINED']
+                df = df[~df[name_col].str.upper().str.contains('|'.join(summary_indicators), na=False)]
+                summary_filtered = len(df)
+                print(f"🚫 Filtered out {original_count - summary_filtered} summary rows")
+            
+            # Find the main metric column (likely calls)
+            call_col = numeric_cols[0]  # Assume first numeric column is calls
+            df = df[df[call_col] > 0]  # Exclude 0-call employees
+            final_count = len(df)
+            print(f"🚫 Filtered out employees with 0 calls ({final_count} remaining from {original_count} total)")
         
         # Basic data summary
         summary = {
@@ -583,6 +623,27 @@ def process_csv_file(file_path):
     """Process CSV file and extract WCS data."""
     try:
         df = pd.read_csv(file_path)
+        
+        # Filter out summary rows and employees with 0 calls
+        numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
+        if len(numeric_cols) > 0:
+            original_count = len(df)
+            
+            # Filter out summary/total rows first
+            text_cols = df.select_dtypes(include=['object']).columns
+            if len(text_cols) > 0:
+                name_col = text_cols[0]
+                # Remove rows with summary indicators
+                summary_indicators = ['TOTAL', 'GRAND', 'SUM', 'AVERAGE', 'AVG', 'ALL', 'COMBINED']
+                df = df[~df[name_col].str.upper().str.contains('|'.join(summary_indicators), na=False)]
+                summary_filtered = len(df)
+                print(f"🚫 Filtered out {original_count - summary_filtered} summary rows")
+            
+            # Find the main metric column (likely calls)
+            call_col = numeric_cols[0]  # Assume first numeric column is calls
+            df = df[df[call_col] > 0]  # Exclude 0-call employees
+            final_count = len(df)
+            print(f"🚫 Filtered out employees with 0 calls ({final_count} remaining from {original_count} total)")
         
         summary = {
             'rows': len(df),
@@ -948,10 +1009,10 @@ def generate_coaching_insights(prompt):
     elif 'underperform' in prompt_lower or 'intervention' in prompt_lower:
         return """🚨 ISPN Employee Intervention Strategy
 
-⚠️ Immediate Action Required (23 employees below 12 partner calls):
-• Carlos Giraudy & Nick Rhodes: 0 calls - Schedule urgent coaching
-• Paige Rombou: 1 call - Basic partner outreach skills assessment needed
-• 20 additional ISPN employees need performance improvement plans
+⚠️ Immediate Action Required (employees below performance threshold):
+• Focus on lowest performers in active employee base
+• Employees with minimal partner outreach need skills assessment
+• Note: 0-call employees excluded from this analysis (handled separately)
 
 🎯 Intervention Framework:
 • Root cause analysis: Partner relationship skills gap vs. motivation vs. partner assignment quality
@@ -1004,16 +1065,16 @@ def generate_coaching_insights(prompt):
     elif 'compare' in prompt_lower or 'outlier' in prompt_lower or 'identify' in prompt_lower:
         return """🔍 ISPN Employee Performance Comparison & Outlier Analysis
 
-📊 Performance Distribution Analysis:
+📊 Performance Distribution Analysis (Active Employees Only):
 • **Top Outliers (Exceptional Performers):**
   - Wednesday Simrell: 104 calls (4.2x average) - Study her methods
   - Lyric Randle: 84 calls (3.4x average) - Document her approach  
   - Joseph Arnold: 75 calls (3.0x average) - Analyze his techniques
 
-• **Bottom Outliers (Immediate Attention Required):**
-  - Carlos Giraudy: 0 calls - Schedule urgent intervention
-  - Nick Rhodes: 0 calls - Immediate coaching needed
-  - Paige Rombou: 1 call - Basic skills assessment required
+• **Bottom Outliers (Among Active Employees):**
+  - Lowest performers among those with >0 calls
+  - Focus on employees in bottom quartile of active performers
+  - Note: 0-call employees excluded from this analysis
 
 🎯 Outlier Pattern Analysis:
 • **High Performers (23 employees):** Above 37 calls - potential mentors
