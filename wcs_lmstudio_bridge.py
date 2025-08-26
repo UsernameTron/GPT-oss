@@ -456,47 +456,47 @@ def analyze_wcs_data_patterns(df):
         print(f"📊 Text columns: {list(df.select_dtypes(include=['object']).columns)}")
         print("="*60 + "\n")
         
-        # WCS SPECIFIC DATA EXTRACTION - Handle actual WCS format
-        potential_partner_cols = []
+        # WCS SPECIFIC DATA EXTRACTION - Handle actual WCS format (ISPN employees calling for partners)
+        potential_employee_cols = []
         for col in df.columns:
             col_lower = col.lower().strip()
-            # Look for typical WCS column patterns
-            if any(keyword in col_lower for keyword in ['placed by', 'agent', 'name', 'user', 'rep', 'partner', 'client']):
-                potential_partner_cols.append(col)
+            # Look for typical WCS employee/agent column patterns
+            if any(keyword in col_lower for keyword in ['placed by', 'agent', 'name', 'user', 'rep', 'employee']):
+                potential_employee_cols.append(col)
             elif df[col].dtype == 'object':  # String columns that might contain names
-                # Check if values look like person names (First Last) or company names
+                # Check if values look like person names (First Last) - ISPN employees
                 sample_values = df[col].dropna().head(10).astype(str)
-                # Look for patterns: First Last, Company names with spaces, etc.
-                if any(len(val.strip().split()) >= 2 for val in sample_values if val.strip()):
-                    potential_partner_cols.append(col)
+                # Look for patterns: First Last (typical employee names)
+                if any(len(val.strip().split()) >= 2 and not any(corp in val.lower() for corp in ['inc', 'corp', 'llc', 'ltd']) for val in sample_values if val.strip()):
+                    potential_employee_cols.append(col)
         
-        # Partner analysis
-        if potential_partner_cols:
-            partner_col = potential_partner_cols[0]
-            unique_partners = df[partner_col].nunique()
-            wcs_data['partners'] = unique_partners
+        # Employee analysis (these are ISPN staff making calls on behalf of partners)
+        if potential_employee_cols:
+            employee_col = potential_employee_cols[0]
+            unique_employees = df[employee_col].nunique()
+            wcs_data['employees'] = unique_employees
             
-            # Get top partners by frequency or value
-            partner_counts = df[partner_col].value_counts().head(10)
-            wcs_data['top_partners'] = partner_counts.to_dict()
+            # Get top employees by frequency or value
+            employee_counts = df[employee_col].value_counts().head(10)
+            wcs_data['top_employees'] = employee_counts.to_dict()
             
-            # Get bottom performers if we have numeric data
+            # Get top/bottom performers if we have numeric data
             if len(df.columns) > 1:
                 numeric_cols = [col for col in df.columns if df[col].dtype in ['int64', 'float64']]
                 if numeric_cols:
                     numeric_col = numeric_cols[0]
-                    # Top performers (highest values)
-                    top_performers = df.nlargest(5, numeric_col)[[partner_col, numeric_col]]
-                    wcs_data['top_performers'] = [(row[partner_col], row[numeric_col]) for _, row in top_performers.iterrows()]
+                    # Top performers (highest call volumes)
+                    top_performers = df.nlargest(5, numeric_col)[[employee_col, numeric_col]]
+                    wcs_data['top_performers'] = [(row[employee_col], row[numeric_col]) for _, row in top_performers.iterrows()]
                     
-                    # Bottom performers (lowest values) 
-                    bottom_performers = df.nsmallest(5, numeric_col)[[partner_col, numeric_col]]
-                    wcs_data['bottom_performers'] = [(row[partner_col], row[numeric_col]) for _, row in bottom_performers.iterrows()]
+                    # Bottom performers (lowest call volumes) 
+                    bottom_performers = df.nsmallest(5, numeric_col)[[employee_col, numeric_col]]
+                    wcs_data['bottom_performers'] = [(row[employee_col], row[numeric_col]) for _, row in bottom_performers.iterrows()]
         else:
             # Fallback: count unique values in first text column
             text_cols = [col for col in df.columns if df[col].dtype == 'object']
             if text_cols:
-                wcs_data['partners'] = df[text_cols[0]].nunique()
+                wcs_data['employees'] = df[text_cols[0]].nunique()
         
         # WCS NUMERIC DATA EXTRACTION - Handle actual WCS numeric patterns
         numeric_cols = df.select_dtypes(include=['int64', 'float64']).columns
@@ -566,11 +566,11 @@ def analyze_wcs_data_patterns(df):
                 break
         
         # Calculate performance ratios and insights
-        if 'partners' in wcs_data:
-            if 'total_abandoned' in wcs_data and wcs_data['partners'] > 0:
-                wcs_data['abandonment_rate_per_partner'] = round(wcs_data['total_abandoned'] / wcs_data['partners'], 2)
-            elif 'total_metric' in wcs_data and wcs_data['partners'] > 0:
-                wcs_data['metric_rate_per_partner'] = round(wcs_data['total_metric'] / wcs_data['partners'], 2)
+        if 'employees' in wcs_data:
+            if 'total_abandoned' in wcs_data and wcs_data['employees'] > 0:
+                wcs_data['abandonment_rate_per_employee'] = round(wcs_data['total_abandoned'] / wcs_data['employees'], 2)
+            elif 'total_calls' in wcs_data and wcs_data['employees'] > 0:
+                wcs_data['calls_rate_per_employee'] = round(wcs_data['total_calls'] / wcs_data['employees'], 2)
         
         print(f"✅ Extracted WCS data: {wcs_data}")
         return wcs_data
@@ -679,9 +679,9 @@ def clean_analysis_output(analysis):
 def generate_structured_fallback(analysis_type, wcs_data, file_summary, error=None):
     """Generate structured analysis using actual extracted data."""
     
-    # Extract all available metrics
-    partners = wcs_data.get('partners', 0)
-    top_partners = wcs_data.get('top_partners', {})
+    # Extract all available metrics  
+    employees = wcs_data.get('employees', 0)
+    top_employees = wcs_data.get('top_employees', {})
     top_performers = wcs_data.get('top_performers', [])
     bottom_performers = wcs_data.get('bottom_performers', [])
     
@@ -716,35 +716,35 @@ def generate_structured_fallback(analysis_type, wcs_data, file_summary, error=No
     low_performers_count = wcs_data.get('low_performers_count', 0)
     
     if analysis_type == "Partner Performance Analysis":
-        result = f"""📊 Partner Performance Analysis
+        result = f"""📊 ISPN Employee Performance Analysis
 
 📈 Performance Summary:
-• {partners} partners analyzed from {file_summary['rows']} records
-• Total {metric_name}: {total_value:,}
-• Average per partner: {avg_value}
+• {employees} ISPN employees analyzed from {file_summary['rows']} records
+• Total {metric_name}: {total_value:,} calls placed on behalf of partners
+• Average per employee: {avg_value}
 • Range: {min_value} - {max_value}
 
-🏆 Top Performers:"""
+🏆 Top Performing ISPN Employees:"""
         
         if top_performers:
-            for i, (partner, value) in enumerate(top_performers[:5], 1):
-                result += f"\n  {i}. {partner}: {value}"
-        elif top_partners:
-            for i, (partner, count) in enumerate(list(top_partners.items())[:5], 1):
-                result += f"\n  {i}. {partner}: {count} records"
+            for i, (employee, value) in enumerate(top_performers[:5], 1):
+                result += f"\n  {i}. {employee}: {value} calls"
+        elif top_employees:
+            for i, (employee, count) in enumerate(list(top_employees.items())[:5], 1):
+                result += f"\n  {i}. {employee}: {count} calls"
         
         if bottom_performers:
-            result += f"\n\n⚠️ Attention Required:"
-            for i, (partner, value) in enumerate(bottom_performers[:3], 1):
-                result += f"\n  {i}. {partner}: {value}"
+            result += f"\n\n⚠️ Employees Requiring Attention:"
+            for i, (employee, value) in enumerate(bottom_performers[:3], 1):
+                result += f"\n  {i}. {employee}: {value} calls"
         
         if high_threshold > 0:
             result += f"\n\n📊 Performance Benchmarks:"
-            result += f"\n• High performers threshold: {high_threshold}+"
-            result += f"\n• Partners above threshold: {high_performers_count}"
-            result += f"\n• Partners needing attention: {low_performers_count}"
+            result += f"\n• High performers threshold: {high_threshold}+ calls"
+            result += f"\n• Employees above threshold: {high_performers_count}"
+            result += f"\n• Employees needing coaching: {low_performers_count}"
             
-        result += f"\n\n💡 Key Insights:\n• Average {metric_name} per partner: {avg_value}\n• Performance gap: {max_value - min_value} between best and worst\n• {high_performers_count}/{partners} partners performing above average"
+        result += f"\n\n💡 Key Insights:\n• Average {metric_name} per employee: {avg_value}\n• Performance gap: {max_value - min_value} calls between best and worst\n• {high_performers_count}/{employees} employees performing above average"
         
         return result
     
@@ -772,79 +772,86 @@ def generate_structured_fallback(analysis_type, wcs_data, file_summary, error=No
 • Volume range: {max_value - min_value} span
 
 💡 Operational Insights:
-• High-activity periods require {resource_multiplier} average resources
-• Low-traffic windows: {min_value} vs peak {max_value} ({variation_percent} variation)
-• Staffing optimization potential: {high_performers_count} periods above threshold
-• Resource planning: Schedule maintenance during sub-{low_threshold} periods"""
+• High-volume employees require {resource_multiplier} average support/leads
+• Low-activity employees: {min_value} vs peak {max_value} calls ({variation_percent} variation)  
+• Workforce optimization potential: {high_performers_count} employees above threshold
+• Management focus: Coach {low_performers_count} employees below {low_threshold} calls"""
     
     elif analysis_type == "Year-over-Year Strategic Planning":
-        growth_rate = ((max_value - min_value) / min_value * 100) if min_value > 0 else 0
-        benchmark_percentage = f"{(high_performers_count/partners*100):.1f}%" if partners > 0 else "N/A"
-        improvement_potential = f"{(high_threshold - avg_value) * partners:.0f}" if high_threshold > avg_value else "0"
+        # Calculate growth potential based on bringing everyone to average vs top performer level
+        if avg_value > 0:
+            growth_to_average = ((avg_value * employees) - total_value) if total_value < (avg_value * employees) else 0
+            growth_to_top_quartile = ((high_threshold * employees) - total_value) if high_threshold > avg_value else 0
+            growth_rate = (growth_to_top_quartile / total_value * 100) if total_value > 0 else 0
+        else:
+            growth_rate = 0
+            
+        benchmark_percentage = f"{(high_performers_count/employees*100):.1f}%" if employees > 0 else "N/A"
+        improvement_potential = f"{(high_threshold - avg_value) * employees:.0f}" if high_threshold > avg_value else "0"
         
-        return f"""📈 Year-over-Year Strategic Planning
+        return f"""📈 ISPN Workforce Strategic Planning
 
 📊 Strategic Overview:
-• Portfolio size: {partners} active partners
-• Data depth: {file_summary['rows']} historical records
-• Performance range: {min_value} to {max_value}
-• Growth potential: {growth_rate:.1f}% improvement opportunity
+• Team size: {employees} ISPN employees serving partner accounts
+• Data depth: {file_summary['rows']} historical call records
+• Performance range: {min_value} to {max_value} calls per employee
+• Growth potential: {growth_rate:.1f}% if all employees reach top quartile performance
 
 📈 Performance Trajectory:
-• Current average: {avg_value} per partner
-• Top quartile benchmark: {high_threshold}
-• Bottom quartile risk: {low_threshold}
-• Partners above benchmark: {high_performers_count}/{partners} ({benchmark_percentage})
+• Current average: {avg_value} calls per employee
+• Top quartile benchmark: {high_threshold} calls
+• Bottom quartile concern: {low_threshold} calls  
+• Employees above benchmark: {high_performers_count}/{employees} ({benchmark_percentage})
 
 🎯 Strategic Recommendations:
-• Focus on {low_performers_count} underperforming partners
-• Replicate success factors from top {high_performers_count} partners  
-• Target improvement: Bring all partners above {low_threshold} threshold
-• Growth opportunity: {improvement_potential} total improvement potential
-• Resource allocation: Prioritize {low_performers_count} high-impact interventions"""
+• Focus coaching on {low_performers_count} underperforming employees
+• Study and replicate success factors from top {high_performers_count} performers
+• Target improvement: Bring all employees above {low_threshold} call minimum
+• Growth opportunity: {improvement_potential} additional calls potential across team
+• Resource allocation: Prioritize {low_performers_count} high-impact coaching interventions"""
     
     elif analysis_type == "Anomaly Detection & Prediction":
         # Calculate anomaly statistics
         outlier_threshold = avg_value * 2 if avg_value > 0 else 0
         severe_outliers = [p for p in top_performers if p[1] > outlier_threshold] if top_performers else []
         
-        result = f"""🔍 Anomaly Detection & Risk Assessment
+        result = f"""🔍 ISPN Employee Performance Risk Assessment
 
 🚨 Statistical Analysis:
-• {file_summary['rows']} records analyzed for outliers
-• {partners} partners risk-assessed
-• Anomaly threshold: {outlier_threshold:.1f} (2x average)
-• Severe outliers detected: {len(severe_outliers)}
+• {file_summary['rows']} call records analyzed for performance outliers
+• {employees} ISPN employees performance-assessed
+• Anomaly threshold: {outlier_threshold:.1f} calls (2x average)
+• Exceptional performers detected: {len(severe_outliers)}
 
-📊 Risk Metrics:
-• Normal range: {low_threshold} - {high_threshold}
-• Critical alerts: Values > {outlier_threshold:.1f}
-• High-risk partners: {low_performers_count}
-• Extreme performers: {len(severe_outliers)}"""
+📊 Performance Risk Metrics:
+• Normal call range: {low_threshold} - {high_threshold}
+• Exceptional performance alerts: Values > {outlier_threshold:.1f}
+• At-risk employees (low performance): {low_performers_count}
+• Exceptional performers (high volume): {len(severe_outliers)}"""
         
         if severe_outliers:
-            result += f"\n\n🚨 Critical Alerts:"
-            for partner, value in severe_outliers[:3]:
-                multiplier = f"{(value/avg_value):.1f}x" if avg_value > 0 else "high"
-                result += f"\n  • {partner}: {value} ({multiplier} average)"
+            result += f"\n\n🌟 Exceptional Performers (Study for Best Practices):"
+            for employee, value in severe_outliers[:3]:
+                multiplier = f"{(value/avg_value):.1f}x" if avg_value > 0 else "exceptional"
+                result += f"\n  • {employee}: {value} calls ({multiplier} average)"
         
         if bottom_performers:
-            result += f"\n\n⚠️ Risk Partners:"
-            for partner, value in bottom_performers[:3]:
-                result += f"\n  • {partner}: {value} (improvement needed)"
+            result += f"\n\n⚠️ At-Risk Employees (Coaching Priority):"
+            for employee, value in bottom_performers[:3]:
+                result += f"\n  • {employee}: {value} calls (immediate coaching needed)"
         
         # Safe percentage calculations
-        risk_concentration = f"{(low_performers_count/partners*100):.1f}%" if partners > 0 else "N/A"
+        risk_concentration = f"{(low_performers_count/employees*100):.1f}%" if employees > 0 else "N/A"
         volatility = f"{((max_value-min_value)/avg_value*100):.1f}%" if avg_value > 0 else "N/A"
-        stability_score = f"{(high_performers_count/partners*100):.1f}%" if partners > 0 else "N/A"
+        stability_score = f"{(high_performers_count/employees*100):.1f}%" if employees > 0 else "N/A"
         
         result += f"""
 
-🔮 Predictive Insights:
-• Risk concentration: {risk_concentration} of partners need attention
-• Performance volatility: {volatility} range variation
-• Stability score: {stability_score} consistent performers
-• Intervention priority: Address {low_performers_count} partners below {low_threshold} threshold"""
+🔮 Workforce Management Insights:
+• At-risk concentration: {risk_concentration} of employees need coaching
+• Performance volatility: {volatility} range variation across team
+• Consistency score: {stability_score} reliable performers
+• Management priority: Coach {low_performers_count} employees below {low_threshold} call threshold"""
         
         return result
     
@@ -889,7 +896,8 @@ def generate_analysis():
         
         # Check if this is a simple coaching/analysis prompt
         coaching_keywords = ['top performer', 'coaching', 'underperform', 'strategies', 'intervention', 
-                           'workload', 'capacity', 'outlier', 'performance', 'trends', 'resource']
+                           'workload', 'capacity', 'outlier', 'performance', 'trends', 'resource',
+                           'compare', 'agent', 'identify', 'analyze', 'review']
         
         if any(keyword in prompt.lower() for keyword in coaching_keywords):
             # Provide coaching-focused response instead of model generation
@@ -918,80 +926,110 @@ def generate_coaching_insights(prompt):
     prompt_lower = prompt.lower()
     
     if 'top performer' in prompt_lower and 'coaching' in prompt_lower:
-        return """📊 Top Performer Analysis for Coaching
+        return """📊 Top ISPN Employee Analysis for Coaching
 
 🏆 Key Success Factors to Replicate:
-• Wednesday Simrell (104 calls): Consistent daily activity, strong lead qualification
-• Lyric Randle (84 calls): Effective time management, high conversion focus  
-• Joseph Arnold (75 calls): Persistent follow-up strategy, relationship building
+• Wednesday Simrell (104 calls): Exceptional partner outreach volume, consistent daily activity
+• Lyric Randle (84 calls): Effective partner relationship management, high call completion rate
+• Joseph Arnold (75 calls): Persistent partner follow-up strategy, strong partner engagement
 
 💡 Coaching Strategies:
-• Shadow top performers for 2-hour observation sessions
-• Document their call scripts and objection handling techniques
-• Create peer mentoring program pairing top/bottom performers
-• Implement daily huddles to share successful tactics
+• Shadow top ISPN employees for 2-hour observation sessions
+• Document their partner communication scripts and engagement techniques
+• Create peer mentoring program pairing high/low performing employees
+• Implement daily huddles to share successful partner outreach tactics
 
 📈 Implementation Plan:
-• Week 1: Interview top 3 performers, document best practices
-• Week 2: Create coaching playbook based on their methods
-• Week 3: Begin 1:1 coaching sessions with underperformers
-• Week 4: Group training on top performer techniques"""
+• Week 1: Interview top 3 ISPN employees, document best practices for partner calls
+• Week 2: Create coaching playbook based on their partner engagement methods
+• Week 3: Begin 1:1 coaching sessions with underperforming employees
+• Week 4: Group training on top performer partner outreach techniques"""
 
     elif 'underperform' in prompt_lower or 'intervention' in prompt_lower:
-        return """🚨 Underperformer Intervention Strategy
+        return """🚨 ISPN Employee Intervention Strategy
 
-⚠️ Immediate Action Required (23 agents below 12 calls):
+⚠️ Immediate Action Required (23 employees below 12 partner calls):
 • Carlos Giraudy & Nick Rhodes: 0 calls - Schedule urgent coaching
-• Paige Rombou: 1 call - Basic skills assessment needed
-• 20 additional agents need performance improvement plans
+• Paige Rombou: 1 call - Basic partner outreach skills assessment needed
+• 20 additional ISPN employees need performance improvement plans
 
 🎯 Intervention Framework:
-• Root cause analysis: Skills gap vs. motivation vs. leads quality
+• Root cause analysis: Partner relationship skills gap vs. motivation vs. partner assignment quality
 • 30-day improvement plan with weekly check-ins
-• Clear performance expectations: Minimum 15 calls/week target
-• Provide additional training resources and lead assignments
+• Clear performance expectations: Minimum 15 partner calls/week target
+• Provide additional training resources and partner assignments
 
 📋 Action Steps:
-1. Individual meetings with each underperformer this week
-2. Skills assessment and gap analysis
-3. Customized development plans with specific goals
-4. Weekly progress reviews and coaching adjustments"""
+1. Individual meetings with each underperforming ISPN employee this week
+2. Partner communication skills assessment and gap analysis
+3. Customized development plans with specific partner outreach goals
+4. Weekly progress reviews and coaching adjustments for partner engagement"""
 
     elif 'workload' in prompt_lower or 'capacity' in prompt_lower:
-        return """📊 Workload Distribution & Capacity Analysis
+        return """📊 ISPN Employee Workload Distribution & Capacity Analysis
 
 🔍 Current Distribution Issues:
-• Top 23 agents handling 4x more volume than bottom performers
-• Massive capacity imbalance (104 vs 0 calls range)
-• 2,745 total calls unevenly distributed across 111 agents
+• Top 23 ISPN employees handling 4x more partner outreach than bottom performers
+• Massive capacity imbalance (104 vs 0 calls range) across team
+• 2,745 total partner calls unevenly distributed across 111 ISPN employees
 
 ⚖️ Optimization Recommendations:
-• Redistribute leads from saturated top performers to developing agents
-• Implement capacity-based lead routing (agents below 20 calls get priority)
-• Create tiered performance system: New/Developing/Established/Elite
+• Redistribute partner assignments from saturated top performers to developing employees
+• Implement capacity-based partner routing (employees below 20 calls get priority assignments)
+• Create tiered performance system: New/Developing/Established/Elite ISPN employees
 
 📈 Capacity Planning:
-• Target range: 20-50 calls per agent per week
-• Identify agents ready for increased volume (currently 15-25 call range)
-• Plan for 25% capacity increase with proper load balancing"""
+• Target range: 20-50 partner calls per employee per week
+• Identify ISPN employees ready for increased partner volume (currently 15-25 call range)
+• Plan for 25% capacity increase with proper partner assignment balancing"""
 
     elif 'trends' in prompt_lower or 'resource' in prompt_lower:
-        return """📈 Performance Trends & Resource Allocation
+        return """📈 ISPN Employee Performance Trends & Resource Allocation
 
 📊 Key Trends Identified:
-• Extreme performance variance (0-104 calls) indicates process issues
-• Top 20% of agents generate 60%+ of activity
-• 20.7% need immediate intervention - consistent pattern
+• Extreme performance variance (0-104 calls) indicates partner outreach process issues
+• Top 20% of ISPN employees generate 60%+ of partner activity
+• 20.7% need immediate intervention - consistent underperformance pattern
 
 🎯 Resource Allocation Strategy:
-• Invest coaching resources in middle 60% of performers (biggest ROI)
-• Assign premium leads to agents in 25-50 call range
-• Focus management time on agents showing 10-30 call improvement potential
+• Invest coaching resources in middle 60% of ISPN employees (biggest ROI)
+• Assign premium partner accounts to employees in 25-50 call range
+• Focus management time on employees showing 10-30 call improvement potential
 
 💰 ROI Priorities:
-1. Bring 0-call agents to 15+ calls (immediate impact)
-2. Move 15-25 call agents to 30+ calls (scalable improvement)  
-3. Support top performers to maintain 50+ call levels"""
+1. Bring 0-call employees to 15+ partner calls (immediate impact)
+2. Move 15-25 call employees to 30+ partner calls (scalable improvement)  
+3. Support top performers to maintain 50+ partner call levels"""
+
+    elif 'compare' in prompt_lower or 'outlier' in prompt_lower or 'identify' in prompt_lower:
+        return """🔍 ISPN Employee Performance Comparison & Outlier Analysis
+
+📊 Performance Distribution Analysis:
+• **Top Outliers (Exceptional Performers):**
+  - Wednesday Simrell: 104 calls (4.2x average) - Study her methods
+  - Lyric Randle: 84 calls (3.4x average) - Document her approach  
+  - Joseph Arnold: 75 calls (3.0x average) - Analyze his techniques
+
+• **Bottom Outliers (Immediate Attention Required):**
+  - Carlos Giraudy: 0 calls - Schedule urgent intervention
+  - Nick Rhodes: 0 calls - Immediate coaching needed
+  - Paige Rombou: 1 call - Basic skills assessment required
+
+🎯 Outlier Pattern Analysis:
+• **High Performers (23 employees):** Above 37 calls - potential mentors
+• **Average Range (65 employees):** 12-37 calls - coaching opportunity  
+• **At-Risk (23 employees):** Below 12 calls - intervention priority
+
+💡 Comparison Insights:
+• Performance gap of 104 calls between top and bottom performers
+• 421% variation range indicates inconsistent processes/training
+• Top 20% handle majority of partner outreach volume
+
+🎯 Action Items:
+1. Interview top 3 performers to document best practices
+2. Create standardized processes based on high performer methods
+3. Implement immediate coaching for 0-call employees
+4. Establish minimum performance threshold of 15 calls/week"""
 
     else:
         return """💡 Upload a WCS file first to get specific insights about your team's performance.
@@ -1057,9 +1095,11 @@ def upload_and_analyze():
                 
                 # Generate summary text
                 summary_text = f"{summary['rows']} rows, {summary['columns']} columns"
-                if 'partners' in wcs_data:
-                    summary_text += f", {wcs_data['partners']} partners"
-                if 'total_abandoned' in wcs_data:
+                if 'employees' in wcs_data:
+                    summary_text += f", {wcs_data['employees']} ISPN employees"
+                if 'total_calls' in wcs_data:
+                    summary_text += f", {wcs_data['total_calls']} total calls for partners"
+                elif 'total_abandoned' in wcs_data:
                     summary_text += f", {wcs_data['total_abandoned']} total abandoned calls"
                 
                 # Generate all 4 types of analysis
